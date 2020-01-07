@@ -1,3 +1,7 @@
+import { ensureArray } from '../utils';
+
+const imageRegex = /\.(jpg|svg|jpeg|png|bmp|gif)$/i;
+
 const validateImage = (file, width, height) => {
   const URL = window.URL || window.webkitURL;
   return new Promise(resolve => {
@@ -11,16 +15,18 @@ const validateImage = (file, width, height) => {
   });
 };
 
-export default (files, [width, height]) => {
-  const list = [];
-  for (let i = 0; i < files.length; i++) {
-    // if file is not an image, reject.
-    if (! /\.(jpg|svg|jpeg|png|bmp|gif)$/i.test(files[i].name)) {
-      return false;
-    }
-
-    list.push(files[i]);
+const validate = (files, [width, height]) => {
+  const images = ensureArray(files).filter(file => imageRegex.test(file.name));
+  if (images.length === 0) {
+    return false;
   }
+  return Promise.all(images.map(image => validateImage(image, width, height)));
+};
 
-  return Promise.all(list.map(file => validateImage(file, width, height)));
+export {
+  validate
+};
+
+export default {
+  validate
 };

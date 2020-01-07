@@ -1,6 +1,6 @@
 import { shallow, createLocalVue } from '@vue/test-utils';
 import flushPromises from 'flush-promises';
-import VeeValidate from './../../src/index';
+import VeeValidate from '@/index';
 import TestComponent from './components/Basic';
 
 const Vue = createLocalVue();
@@ -30,11 +30,6 @@ test('watches input value on input and blur', async () => {
   expect(input.classes()).toContain('touched');
   expect(input.classes()).toContain('pristine'); // hasn't been changed yet.
   expect(input.classes()).not.toContain('dirty');
-
-  expect(input.classes()).toContain('text-red'); // triggered by blur
-  expect(input.classes()).not.toContain('text-green');
-  expect(input.classes()).toContain('is-invalid');
-  expect(input.classes()).not.toContain('is-valid');
 
   input.trigger('input');
   await flushPromises();

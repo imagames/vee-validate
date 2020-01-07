@@ -1,11 +1,24 @@
 import isEmail from 'validator/lib/isEmail';
+import { assign } from '../utils';
 
-const validate = (value) => {
-  if (Array.isArray(value)) {
-    return value.every(val => isEmail(String(val)));
+const validate = (value, { multiple = false, ...options } = {}) => {
+  if (multiple && !Array.isArray(value)) {
+    value = String(value).split(',').map(emailStr => emailStr.trim());
   }
 
-  return isEmail(String(value));
+  const validatorOptions = assign({}, options);
+
+  if (Array.isArray(value)) {
+    return value.every(val => isEmail(String(val), validatorOptions));
+  }
+
+  return isEmail(String(value), validatorOptions);
 };
 
-export default validate;
+export {
+  validate
+};
+
+export default {
+  validate
+};

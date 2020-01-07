@@ -1,34 +1,35 @@
-import Validator from './core/validator';
+import VeeValidate from './plugin';
 import directive from './directive';
 import mixin from './mixin';
-import install from './install';
-import use from './use';
+import Validator from './core/validator';
 import ErrorBag from './core/errorBag';
 import mapFields from './core/mapFields';
-import { ErrorComponent } from './components';
+import { ValidationProvider, ValidationObserver, withValidation } from './components';
 
 const version = '__VERSION__';
+const install = VeeValidate.install;
+const use = VeeValidate.use;
+const setMode = VeeValidate.setMode;
 
 export {
   install,
   use,
+  setMode,
   directive,
   mixin,
   mapFields,
   Validator,
   ErrorBag,
   version,
-  ErrorComponent
+  ValidationProvider,
+  ValidationObserver,
+  withValidation
 };
 
-export default {
-  install,
-  use,
-  directive,
-  mixin,
-  mapFields,
-  Validator,
-  ErrorBag,
-  ErrorComponent,
-  version
-};
+VeeValidate.version = version;
+VeeValidate.mapFields = mapFields;
+VeeValidate.ValidationProvider = ValidationProvider;
+VeeValidate.ValidationObserver = ValidationObserver;
+VeeValidate.withValidation = withValidation;
+
+export default VeeValidate;

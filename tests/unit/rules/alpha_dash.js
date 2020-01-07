@@ -1,4 +1,4 @@
-import validate from './../../../src/rules/alpha_dash';
+import { validate } from '@/rules/alpha_dash';
 
 const valid = [
   'a',
@@ -28,13 +28,12 @@ const invalid = [
 // eslint-disable-next-line
 test('validates that the string may only contain alpha-numeric characters as well as dashes and spaces', () => {
   expect.assertions(19);
-    // valid.
+  // valid.
   valid.forEach(value => expect(validate(value)).toBe(true));
 
-    // invalid
+  // invalid
   invalid.forEach(value => expect(validate(value)).toBe(false));
 });
-
 
 test('validates the string contains alphabetic chars from other locales', () => {
   // any locale.
@@ -42,10 +41,10 @@ test('validates the string contains alphabetic chars from other locales', () => 
   expect(validate('Привет_-')).toBe(true);
 
   // specfic locale
-  expect(validate('peace', ['ar'])).toBe(false);
-  expect(validate('peace', ['ru'])).toBe(false);
+  expect(validate('peace', { locale: 'ar' })).toBe(false);
+  expect(validate('peace', { locale: 'ru' })).toBe(false);
 
   // non-existant locale defaults to english validation.
-  expect(validate('peace', ['blah'])).toBe(true);
-  expect(validate('اين اشيائي', ['blah'])).toBe(false); // non english characters.
+  expect(validate('peace', { locale: 'blah' })).toBe(true);
+  expect(validate('اين اشيائي', { locale: 'blah' })).toBe(false); // non english characters.
 });

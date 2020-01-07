@@ -1,4 +1,4 @@
-import Dictionary from './../../../src/core/localization/default';
+import Dictionary from '@/localization/default';
 
 test('does not merge if a non object is provided', () => {
   const dict = new Dictionary('a string');
@@ -70,6 +70,17 @@ test('can set messages', () => {
   expect(dict.getMessage('en', 'winter')).toBe('Winter is coming');
 });
 
+test('can set messages when no messages present', () => {
+  const dict = new Dictionary();
+  dict.merge({
+    'nl': {}
+  });
+
+  dict.setMessage('nl', 'winter', 'De winter komt er aan');
+
+  expect(dict.getMessage('nl', 'winter')).toBe('De winter komt er aan');
+});
+
 test('can set attributes', () => {
   const dict = new Dictionary({
     en: {
@@ -80,7 +91,7 @@ test('can set attributes', () => {
   dict.setAttribute('en', 'email', 'Email Address');
 
   expect(dict.getAttribute('en', 'email')).toBe('Email Address');
-  
+
   // test graceful population of non-existant directories.
   dict.setAttribute('fr', 'email', 'address');
   expect(dict.container.fr).toEqual({
@@ -107,7 +118,6 @@ test('returns the default message for the given locale when no fallback is provi
       messages: {}
     }
   });
-
 
   // default for locale
   expect(dict.getMessage('ar', 'any')).toBe('رسالة افتراضية');

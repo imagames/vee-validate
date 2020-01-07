@@ -1,4 +1,4 @@
-import { toArray } from '../core/utils';
+import { isNullOrUndefined, toArray } from '../utils';
 
 /**
  * @param {Array|String} value
@@ -16,12 +16,12 @@ const compare = (value, length, max) => {
   return value.length >= length && value.length <= max;
 };
 
-export default (value, [length, max = undefined]) => {
-  length = Number(length);
-  if (value === undefined || value === null) {
+const validate = (value, [length, max = undefined]) => {
+  if (isNullOrUndefined(value)) {
     return false;
   }
 
+  length = Number(length);
   if (typeof value === 'number') {
     value = String(value);
   }
@@ -31,4 +31,12 @@ export default (value, [length, max = undefined]) => {
   }
 
   return compare(value, length, max);
+};
+
+export {
+  validate
+};
+
+export default {
+  validate
 };

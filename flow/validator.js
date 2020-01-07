@@ -16,7 +16,8 @@ declare type ValidationResult = {
 };
 
 declare type ExtendOptions = {
-  hasTarget?: boolean
+  hasTarget?: boolean,
+  initial?: boolean
 };
 
 declare type FieldOptions = {
@@ -45,4 +46,10 @@ declare type FieldOptions = {
   targetOf?: string | null, // the id of the field that targets this one
   validity?: boolean, // if constrained validation API should be used (mdn)
   vm?: any // the vue instance that owns this field
+};
+
+declare type VerifyOptions = {
+  name?: string,
+  values?: MapObject,
+  bails?: boolean
 };

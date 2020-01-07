@@ -1,5 +1,5 @@
 import { shallow, mount, createLocalVue } from '@vue/test-utils';
-import VeeValidate from './../../src/index';
+import VeeValidate from '@/index';
 import HTMLInputsTestComponent from './components/Types';
 import ComponentsTestComponent from './components/Resolvers';
 import InputWithResolvers from './components/stubs/Input';
@@ -60,7 +60,6 @@ describe('resolves native HTML Inputs values', () => {
   });
 
   test('file fields', () => {
-    const input = wrapper.find('#file');
     const field = wrapper.vm.$validator.fields.find({ name: 'fileField' });
     expect(field.value).toEqual([]); // empty list of inputs
   });
@@ -75,7 +74,7 @@ describe('resolves custom components values', () => {
     const comp = wrapper.find(InputWithoutResolvers);
     const field = wrapper.vm.$validator.fields.find({ name: 'no-resolver' });
     // because it fetches the value from the props.
-    expect(field.value).toBe(undefined); 
+    expect(field.value).toBe(undefined);
 
     comp.setProps({
       value: 'val'

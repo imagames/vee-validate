@@ -1,49 +1,43 @@
-import install from './install';
+import VeeValidate from './plugin';
 import directive from './directive';
 import mixin from './mixin';
 import en from '../locale/en';
-import use from './use';
-import Rules from './rules';
+import * as Rules from './rules';
 import mapFields from './core/mapFields';
 import Validator from './core/validator';
 import ErrorBag from './core/errorBag';
-import { ErrorComponent } from './components';
+import { assign } from './utils';
+import { ValidationProvider, ValidationObserver, withValidation } from './components';
 
 const version = '__VERSION__';
 
-const rulesPlugin = ({ Validator }) => {
-  Object.keys(Rules).forEach(rule => {
-    Validator.extend(rule, Rules[rule]);
-  });
+Object.keys(Rules).forEach(rule => {
+  Validator.extend(rule, Rules[rule].validate, assign({}, Rules[rule].options, { paramNames: Rules[rule].paramNames }));
+});
 
-  // Merge the english messages.
-  Validator.localize('en', en);
-};
+// Merge the english messages.
+Validator.localize({ en });
 
-use(rulesPlugin);
+const install = VeeValidate.install;
 
 export {
   install,
-  use,
   directive,
   mixin,
   mapFields,
   Validator,
   ErrorBag,
   Rules,
-  ErrorComponent,
-  version
+  version,
+  ValidationProvider,
+  ValidationObserver,
+  withValidation
 };
 
-export default {
-  install,
-  use,
-  directive,
-  mixin,
-  mapFields,
-  Validator,
-  ErrorBag,
-  ErrorComponent,
-  Rules,
-  version
-};
+VeeValidate.version = version;
+VeeValidate.mapFields = mapFields;
+VeeValidate.ValidationProvider = ValidationProvider;
+VeeValidate.ValidationObserver = ValidationObserver;
+VeeValidate.withValidation = withValidation;
+
+export default VeeValidate;

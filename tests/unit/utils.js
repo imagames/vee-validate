@@ -1,6 +1,8 @@
-import * as utils from '../../src/core/utils';
-import * as dateUtils from '../../src/core/utils/date';
+import * as utils from '@/utils';
+import * as dateUtils from '@/utils/date';
 import * as i18Utils from '../../locale/utils';
+import * as eventUtils from '@/utils/events';
+import helpers from '../helpers';
 
 test('gets the data attribute prefixed with the plugin', () => {
   document.body.innerHTML =
@@ -41,6 +43,48 @@ test('gets the element scope from the element or from the owning form', () => {
       </form>`;
   el = document.querySelector('#el');
   expect(utils.getScope(el)).toBe('form-scope');
+});
+
+test('gets the element scope from div tag', () => {
+  document.body.innerHTML =
+      `<div>
+          <div id="el" type="text" name="field" data-vv-scope="scope1">
+          </div>
+      </div>`;
+  let el = document.querySelector('#el');
+  expect(utils.getScope(el)).toBe('scope1');
+
+  document.body.innerHTML =
+      `<form data-vv-scope="form-scope">
+        <div id="el" type="text" name="field">
+        </div>
+      </form>`;
+  el = document.querySelector('#el');
+  expect(utils.getScope(el)).toBe('form-scope');
+});
+
+test('gets the element closest form', () => {
+  document.body.innerHTML =
+      `<div>
+          <input id="el" type="text" name="field" data-vv-scope="scope1">
+      </div>`;
+  let el = document.querySelector('#el');
+  expect(utils.getForm(el)).toBe(null);
+
+  document.body.innerHTML =
+      `<form id='test'>
+          <input id="el" type="text" name="field">
+      </form>`;
+  el = document.querySelector('#el');
+  expect(utils.getForm(el).id).toBe('test');
+
+  document.body.innerHTML =
+      `<form id='test'>
+          <div id="el">
+          </div>
+      </form>`;
+  el = document.querySelector('#el');
+  expect(utils.getForm(el).id).toBe('test');
 });
 
 test('checks if a value is an object', () => {
@@ -153,26 +197,42 @@ test('converts array like objects to arrays', () => {
 
   let array = utils.toArray(nodeList);
   expect(Array.isArray(array)).toBe(true);
-
-  // test polyfill.
-  global.Array.from = undefined;
-  array = utils.toArray(nodeList);
-  expect(Array.isArray(array)).toBe(true);
-  expect(array.length).toBe(3);
 });
 
+test('converts file list or single file to array of files', () => {
+  const file = helpers.file('file.jpg', 'image/jpeg', 10);
+  expect(Array.isArray(file)).toBe(false);
+
+  const fileList = helpers.fileList([file]);
+  expect(Array.isArray(fileList)).toBe(false);
+
+  expect(Array.isArray(utils.ensureArray(file))).toBe(true);
+  expect(Array.isArray(utils.ensureArray(fileList))).toBe(true);
+});
 
 test('checks if a value path with exists', () => {
   const some = {
     value: {
       path: undefined,
-      val: 1
+      nullValue: null,
+      val: 1,
+      someString: ''
     }
   };
 
   expect(utils.hasPath('value.val', some)).toBe(true); // exists.
   expect(utils.hasPath('value.path', some)).toBe(true); // undefined but exists.
-  expect(utils.hasPath('value.not', some)).toBe(false); // does not.
+  expect(utils.hasPath('value.nullValue', some)).toBe(true); // null but exists.
+  expect(utils.hasPath('value.notExist', some)).toBe(false); // does not.
+  expect(() => {
+    utils.hasPath('value.val.notExistAttr', some);
+  }).toThrow('value.val is not an object'); // throw error because not object.
+  expect(() => {
+    utils.hasPath('value.someString.notExistAttr', some);
+  }).toThrow('value.someString is not an object'); // throw error because not object.
+  expect(() => {
+    utils.hasPath('value.nullValue.notExistAttr', some);
+  }).toThrow('value.nullValue is not an object'); // throw error because not object.
 });
 
 test('gets the value path with a fallback value', () => {
@@ -190,7 +250,6 @@ test('gets the value path with a fallback value', () => {
   expect(utils.getPath('value.path', some)).toBe(undefined); // undefined but exists.
   expect(utils.getPath('value.not', some, false)).toBe(false); // does not.
 });
-
 
 test('debounces the provided function', done => {
   const [value, argument] = ['someval', 'somearg'];
@@ -226,9 +285,10 @@ test('calls functions immediatly if time is 0', done => {
 });
 
 test('warns with branded message', () => {
-  global.console = { warn: jest.fn() }
+  global.console = { warn: jest.fn() };
   utils.warn('Something is not right');
-  expect(console.warn).toBeCalledWith('[vee-validate] Something is not right');
+  // eslint-disable-next-line no-console
+  expect(console.warn).toHaveBeenCalledWith('[vee-validate] Something is not right');
 });
 
 test('it generates a unique id', () => {
@@ -281,8 +341,8 @@ describe('normalizes rules', () => {
 
 test('creates branded errors', () => {
   expect(() => {
-    throw utils.createError('My Error')
-  }).toThrowError('[vee-validate] My Error');
+    throw utils.createError('My Error');
+  }).toThrow('[vee-validate] My Error');
 });
 
 test('checks if a value is a callable function', () => {
@@ -326,7 +386,6 @@ test('compares two values', () => {
     bar: 2
   })).toBe(true);
 
-
   expect(utils.isEqual({
     foo: /myregx/g,
     bar: 2
@@ -338,6 +397,8 @@ test('compares two values', () => {
   expect(utils.isEqual([1, 2, 3], [1, 2, 3])).toBe(true);
   expect(utils.isEqual([1, 2, 3], [1, 2])).toBe(false);
   expect(utils.isEqual([1, 2, 3], [1, 2, '3'])).toBe(false);
+
+  expect(utils.isEqual(NaN, NaN)).toBe(true);
 });
 
 test('formats file sizes', () => {
@@ -346,7 +407,7 @@ test('formats file sizes', () => {
   expect(i18Utils.formatFileSize(1050000)).toBe('1 GB');
 });
 
-test('checks if vee-validate is available globally.', () => {
+test('checks if vee-validate is available globally', () => {
   expect(i18Utils.isDefinedGlobally()).toBe(false);
   global.VeeValidate = {
     myprop: true
@@ -355,7 +416,7 @@ test('checks if vee-validate is available globally.', () => {
 });
 
 describe('pareses date values', () => {
-  const format = 'DD-MM-YYYY';
+  const format = 'dd-MM-yyyy';
 
   test('parses string formatted dates without allowing overflows', () => {
     expect(dateUtils.parseDate('11-12-2016', format)).toBeTruthy();
@@ -367,29 +428,28 @@ describe('pareses date values', () => {
     expect(dateUtils.parseDate(new Date(2017, 13, 11), format)).toBeTruthy();
     expect(dateUtils.parseDate(Date.parse('foo'), format)).toBe(null);
   });
-
 });
 
-describe('makeEventsArray', () => {
+describe('normalizeEvents', () => {
   test('it creates valid event arrays', () => {
-    expect(utils.makeEventsArray('input|blur|change')).toEqual(['input', 'blur', 'change']);
-    expect(utils.makeEventsArray('focus')).toEqual(['focus'])
+    expect(eventUtils.normalizeEvents('input|blur|change')).toEqual(['input', 'blur', 'change']);
+    expect(eventUtils.normalizeEvents('focus')).toEqual(['focus']);
   });
 
   test('it handles empty event strings', () => {
-    expect(utils.makeEventsArray('')).toEqual([]);
+    expect(eventUtils.normalizeEvents('')).toEqual([]);
   });
 
   test('it handles invalid event strings', () => {
-    expect(utils.makeEventsArray('input, focus')).not.toEqual(['input', 'focus']);
-    expect(utils.makeEventsArray('blur/change')).toEqual(['blur/change']);
+    expect(eventUtils.normalizeEvents('input, focus')).not.toEqual(['input', 'focus']);
+    expect(eventUtils.normalizeEvents('blur/change')).toEqual(['blur/change']);
   });
 });
 
 describe('makeDelayObject', () => {
   test('delays fallback to the global delays if not found', () => {
-    expect(utils.makeDelayObject(['input', 'blur'], {}, { input: 100, blur: 200 })).toEqual({input: 100, blur: 200});
-    expect(utils.makeDelayObject(['change'], {}, { change: 100 })).toEqual({change: 100});
+    expect(utils.makeDelayObject(['input', 'blur'], {}, { input: 100, blur: 200 })).toEqual({ input: 100, blur: 200 });
+    expect(utils.makeDelayObject(['change'], {}, { change: 100 })).toEqual({ change: 100 });
   });
 
   test('it handles delays from an object under the local key', () => {
@@ -397,20 +457,20 @@ describe('makeDelayObject', () => {
   });
 
   test('it handles overwrites values from the global key with those from local key', () => {
-    expect(utils.makeDelayObject(['input'], {input: 100}, { input: 500 })).toEqual({input: 100});
-    expect(utils.makeDelayObject(['input', 'blur'], {input: 600}, {input: 200, blur: 400})).toEqual({input: 600, blur: 400});
+    expect(utils.makeDelayObject(['input'], { input: 100 }, { input: 500 })).toEqual({ input: 100 });
+    expect(utils.makeDelayObject(['input', 'blur'], { input: 600 }, { input: 200, blur: 400 })).toEqual({ input: 600, blur: 400 });
   });
 
   test('it handles all events and sets them to 0', () => {
-    expect(utils.makeDelayObject(['change', 'blur', 'focus'], {})).toEqual({change: 0, blur: 0, focus: 0});
+    expect(utils.makeDelayObject(['change', 'blur', 'focus'], {})).toEqual({ change: 0, blur: 0, focus: 0 });
   });
 
   test('it handles empty events', () => {
-    expect(utils.makeDelayObject([], {global: {input: 100}})).toEqual({});
+    expect(utils.makeDelayObject([], { global: { input: 100 } })).toEqual({});
   });
 
   test('it handles empty given objects', () => {
-    expect(utils.makeDelayObject(['input'], {})).toEqual({input: 0});
+    expect(utils.makeDelayObject(['input'], {})).toEqual({ input: 0 });
   });
 
   test('it handles empty events and empty given objects together', () => {
@@ -418,11 +478,11 @@ describe('makeDelayObject', () => {
   });
 
   test('only outputs the requested events', () => {
-    expect(utils.makeDelayObject(['input', 'blur'], {change: 200, focus: 800})).toEqual({ blur: 0, input: 0});
+    expect(utils.makeDelayObject(['input', 'blur'], { change: 200, focus: 800 })).toEqual({ blur: 0, input: 0 });
   });
 
   test('it handles delay integers', () => {
-    expect(utils.makeDelayObject(['focus', 'input'], 600)).toEqual({focus: 600, input: 600});
+    expect(utils.makeDelayObject(['focus', 'input'], 600)).toEqual({ focus: 600, input: 600 });
   });
 
   test('patches unspecified events with the fallback delay config', () => {
@@ -439,34 +499,85 @@ describe('deepParseInt', () => {
   });
 
   test('it parses numeric strings', () => {
-    expect(utils.deepParseInt("10")).toEqual(10);
-    expect(utils.deepParseInt("hey")).toEqual(NaN);
+    expect(utils.deepParseInt('10')).toEqual(10);
+    expect(utils.deepParseInt('hey')).toEqual(NaN);
   });
 
   test('it parses all values on the first level of an object to int', () => {
-    expect(utils.deepParseInt({ blur: "10", input: "400", focus: 300, change: "hello" })).toEqual({ blur: 10, input: 400, focus: 300, change: NaN });
+    expect(utils.deepParseInt({ blur: '10', input: '400', focus: 300, change: 'hello' })).toEqual({ blur: 10, input: 400, focus: 300, change: NaN });
   });
 });
 
 test('detects passive events support', () => {
-  expect(utils.detectPassiveSupport()).toBe(true);
+  expect(eventUtils.detectPassiveSupport()).toBe(true);
 
   const addEvt = window.addEventListener;
   window.addEventListener = (evt, cb, opts) => {
     if (opts.passive) {
       return 'yay!';
     }
-  }
+  };
 
-  expect(utils.detectPassiveSupport()).toBe(true);
+  expect(eventUtils.detectPassiveSupport()).toBe(true);
 
   window.addEventListener = (evt, cb, opts) => {
     if (typeof opts === 'object') {
       throw new Error('Should not pass an object');
     }
-  }
+  };
 
-  expect(utils.detectPassiveSupport()).toBe(false);
+  expect(eventUtils.detectPassiveSupport()).toBe(false);
 
   window.addEventListener = addEvt;
+});
+
+test('tells if the input is textual input', () => {
+  const inputs = [
+    { type: 'text', isValid: true },
+    { type: 'url', isValid: true },
+    { type: 'password', isValid: true },
+    { type: 'email', isValid: true },
+    { type: 'tel', isValid: true },
+    { type: 'textarea', isValid: true },
+    { type: 'search', isValid: true },
+    { type: 'checkbox', isValid: false }
+  ];
+
+  inputs.forEach(input => {
+    let el = document.createElement('input');
+    el.type = input.type;
+    expect(utils.isTextInput(el)).toBe(input.isValid);
+  });
+});
+
+test('tells if the input is radio or checkbox inputs', () => {
+  const inputs = [
+    { type: 'text', isValid: false },
+    { type: 'checkbox', isValid: true },
+    { type: 'radio', isValid: true }
+  ];
+
+  inputs.forEach(input => {
+    let el = document.createElement('input');
+    el.type = input.type;
+    expect(utils.isCheckboxOrRadioInput(el)).toBe(input.isValid);
+  });
+});
+
+test('tells if the input is a date input', () => {
+  const inputs = [
+    { type: 'text', isValid: false },
+    { type: 'date', isValid: true },
+    { type: 'week', isValid: true },
+    { type: 'month', isValid: true },
+    { type: 'datetime-local', isValid: true },
+    { type: 'time', isValid: true },
+    { type: 'radio', isValid: false }
+  ];
+
+  inputs.forEach(input => {
+    let el = document.createElement('input');
+    el.type = input.type;
+    expect(utils.isDateInput(el)).toBe(input.isValid);
+  });
 });

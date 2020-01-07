@@ -1,20 +1,26 @@
-import Rules from './rules';
+import * as Rules from './rules';
+import VeeValidate from './plugin';
+import mapFields from './core/mapFields';
+import { ValidationProvider, ValidationObserver, withValidation } from './components';
+import { assign } from './utils';
 import en from '../locale/en';
-import minimal from './index.minimal';
 
 // rules plugin definition.
-const rulesPlugin = ({ Validator }) => {
-  Object.keys(Rules).forEach(rule => {
-    Validator.extend(rule, Rules[rule]);
-  });
 
-  // Merge the english messages.
-  Validator.localize('en', en);
-};
+Object.keys(Rules).forEach(rule => {
+  VeeValidate.Validator.extend(rule, Rules[rule].validate, assign({}, Rules[rule].options, { paramNames: Rules[rule].paramNames }));
+});
 
-// install the rules via the plugin API.
-minimal.use(rulesPlugin);
+// Merge the english messages.
+VeeValidate.Validator.localize({
+  en
+});
 
-minimal.Rules = Rules;
+VeeValidate.version = '__VERSION__';
+VeeValidate.Rules = Rules;
+VeeValidate.mapFields = mapFields;
+VeeValidate.ValidationProvider = ValidationProvider;
+VeeValidate.ValidationObserver = ValidationObserver;
+VeeValidate.withValidation = withValidation;
 
-export default minimal;
+export default VeeValidate;

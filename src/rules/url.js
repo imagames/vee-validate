@@ -1,15 +1,24 @@
 import isURL from 'validator/lib/isURL';
-import { isNullOrUndefined } from '../core/utils';
+import { assign, isNullOrUndefined } from '../utils';
 
-export default (value, [requireProtocol = false] = []) => {
-  const options = { require_protocol: !!requireProtocol, allow_underscores: true };
+const validate = (value, options = {}) => {
   if (isNullOrUndefined(value)) {
     value = '';
   }
 
+  const validatorOptions = assign({}, options);
+
   if (Array.isArray(value)) {
-    return value.every(val => isURL(val, options));
+    return value.every(val => isURL(val, validatorOptions));
   }
 
-  return isURL(value, options);
+  return isURL(value, validatorOptions);
+};
+
+export {
+  validate
+};
+
+export default {
+  validate
 };

@@ -1,15 +1,15 @@
 export default {
-  querySelector(el) {
+  querySelector (el) {
     global.document.querySelector = () => el || null;
   },
-  binding() {
+  binding () {
     return {
       modifiers: {},
       expression: 'exp',
       value: 'someval'
     };
   },
-  vnode(shouldThrow, result, callback) {
+  vnode (shouldThrow, result, callback) {
     return {
       context: {
         $validator: this.validator(shouldThrow, result, callback),
@@ -22,9 +22,9 @@ export default {
       }
     };
   },
-  validator(shouldThrow = true, result = false, callback) {
+  validator (shouldThrow = true, result = false, callback) {
     return {
-      validate(name, value) {
+      validate (name, value) {
         if (shouldThrow) {
           throw (String(value));
         }
@@ -39,14 +39,15 @@ export default {
           return something;
         });
       },
-      attach() {
+      attach () {
 
       }
     };
   },
-  file: (name, type, size = 1) => ({
-    name,
-    type,
-    size: size * 1024
+  file: (name, type, size = 1) => new File([new ArrayBuffer(size * 1024)], name, { type }),
+  fileList: (files) => ({
+    length: files.length,
+    item: (index) => files[index],
+    ...files
   })
 };

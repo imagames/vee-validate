@@ -1,6 +1,6 @@
 import { mount, createLocalVue } from '@vue/test-utils';
 import flushPromises from 'flush-promises';
-import VeeValidate from './../../src/index';
+import VeeValidate from '@/index';
 import TestComponent from './components/Names';
 
 const Vue = createLocalVue();
@@ -15,8 +15,8 @@ test('resolves field name from name attribute and data-vv-name on HTML inputs', 
 
   await flushPromises();
   expect(wrapper.vm.errors.all()).toEqual([
-    'The first field is required.',
-    'The second field is required.'
+    'The first field is required',
+    'The second field is required'
   ]);
 });
 
@@ -29,8 +29,8 @@ test('resolves component field names from name prop and data-vv-name', async () 
 
   await flushPromises();
   expect(wrapper.vm.errors.all()).toEqual([
-    'The third field is required.',
-    'The fourth field is required.'
+    'The third field is required',
+    'The fourth field is required'
   ]);
 });
 
@@ -42,6 +42,6 @@ test('resolves component field names from custom name resolver', async () => {
 
   await flushPromises();
   expect(wrapper.vm.errors.all()).toEqual([
-    'The fifth field is required.'
+    'The fifth field is required'
   ]);
 });

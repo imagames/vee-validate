@@ -1,66 +1,100 @@
 import ErrorBag from './errorBag';
-import { isObject, isCallable, toArray, createError, assign, find, isNullOrUndefined, warn } from './utils';
-import Field from './field';
 import FieldBag from './fieldBag';
-import Config from '../config';
+import Dictionary from '../dictionary';
+import RuleContainer from './ruleContainer';
+import Field from './field';
+import { getConfig } from '../config';
+import {
+  isObject,
+  getPath,
+  isCallable,
+  toArray,
+  createError,
+  assign,
+  find,
+  isNullOrUndefined,
+  includes,
+  normalizeRules,
+  isEmptyArray,
+  warn
+} from '../utils';
 
 // @flow
 
-const RULES: { [string]: Rule } = {};
-let STRICT_MODE: boolean = true;
-const TARGET_RULES = ['confirmed', 'after', 'before'];
-
 export default class Validator {
-  strict: boolean;
   errors: ErrorBag;
   fields: FieldBag;
   flags: MapObject;
   fastExit: boolean;
   paused: boolean;
-  ownerId: string | number;
   reset: (matcher) => Promise<void>;
 
-  constructor (validations?: MapObject, options?: MapObject = { fastExit: true }) {
-    this.strict = STRICT_MODE;
+  constructor (validations?: MapObject, options?: MapObject = { fastExit: true }, pluginContainer?: Object = null) {
     this.errors = new ErrorBag();
     this.fields = new FieldBag();
-    this.flags = {};
     this._createFields(validations);
     this.paused = false;
-    this.fastExit = options.fastExit || false;
-    this.ownerId = options.vm && options.vm._uid;
-    this._localeListener = () => {
-      this.errors.regenerate();
+    this.fastExit = !isNullOrUndefined(options && options.fastExit) ? options.fastExit : true;
+    this.$vee = pluginContainer || {
+      _vm: {
+        $nextTick: (cb) => isCallable(cb) ? cb() : Promise.resolve(),
+        $emit: () => {},
+        $off: () => {}
+      }
     };
+  }
 
-    if (this._vm) {
-      this._vm.$on('localeChanged', this._localeListener);
+  /**
+   * @deprecated
+   */
+  static get rules () {
+    if (process.env.NODE_ENV !== 'production') {
+      warn('this accessor will be deprecated, use `import { rules } from "vee-validate"` instead.');
     }
+
+    return RuleContainer.rules;
   }
 
   /**
-   * Getter for the dictionary.
+   * @deprecated
    */
-  get dictionary (): IDictionary {
-    return Config.dependency('dictionary');
+  get rules () {
+    if (process.env.NODE_ENV !== 'production') {
+      warn('this accessor will be deprecated, use `import { rules } from "vee-validate"` instead.');
+    }
+
+    return RuleContainer.rules;
   }
 
-  get _vm () {
-    return Config.dependency('vm');
+  get dictionary () {
+    return Dictionary.getDriver();
   }
 
-  /**
-   * Static Getter for the dictionary.
-   */
-  static get dictionary (): IDictionary {
-    return Config.dependency('dictionary');
+  static get dictionary () {
+    return Dictionary.getDriver();
+  }
+
+  get flags () {
+    return this.fields.items.reduce((acc, field) => {
+      if (field.scope) {
+        acc[`$${field.scope}`] = {
+          [field.name]: field.flags
+        };
+
+        return acc;
+      }
+
+      acc[field.name] = field.flags;
+
+      return acc;
+    }, {});
   }
 
   /**
    * Getter for the current locale.
    */
   get locale (): string {
-    return this.dictionary.locale;
+    return Validator.locale;
   }
 
   /**
@@ -70,42 +104,30 @@ export default class Validator {
     Validator.locale = value;
   }
 
-  /**
-  * Static getter for the validator locale.
-  */
-  static get locale (): string {
-    return Validator.dictionary.locale;
+  static get locale () {
+    return Dictionary.getDriver().locale;
   }
 
   /**
-   * Static setter for the validator locale.
+   * Setter for the validator locale.
    */
-  static set locale (value: string): void {
-    const hasChanged = value !== Validator.dictionary.locale;
-    Validator.dictionary.locale = value;
-    if (hasChanged && Config.dependency('vm')) {
-      Config.dependency('vm').$emit('localeChanged');
+  static set locale (value) {
+    const hasChanged = value !== Dictionary.getDriver().locale;
+    Dictionary.getDriver().locale = value;
+    if (hasChanged && Validator.$vee && Validator.$vee._vm) {
+      Validator.$vee._vm.$emit('localeChanged');
     }
   }
 
   /**
-   * Getter for the rules object.
-   */
-  get rules (): { [string]: Rule } {
-    return RULES;
-  }
-
-  /**
-   * Static Getter for the rules object.
-   */
-  static get rules (): { [string]: Rule } {
-    return RULES;
-  }
-
-  /**
    * Static constructor.
+   * @deprecated
    */
   static create (validations?: MapObject, options?: MapObject): Validator {
+    if (process.env.NODE_ENV !== 'production') {
+      warn('Please use `new` to create new validator instances.');
+    }
+
     return new Validator(validations, options);
   }
 
@@ -114,42 +136,31 @@ export default class Validator {
    */
   static extend (name: string, validator: Rule | Object, options?: ExtendOptions = {}) {
     Validator._guardExtend(name, validator);
-    Validator._merge(name, validator);
-    if (options && options.hasTarget) {
-      TARGET_RULES.push(name);
-    }
+    // rules imported from the minimal bundle
+    // will have the options embedded in them
+    const mergedOpts = validator.options || {};
+    Validator._merge(name, {
+      validator,
+      paramNames: (options && options.paramNames) || validator.paramNames,
+      options: assign({ hasTarget: false, immediate: true }, mergedOpts, options || {})
+    });
   }
 
   /**
    * Removes a rule from the list of validators.
+   * @deprecated
    */
   static remove (name: string): void {
-    delete RULES[name];
-    const idx = TARGET_RULES.indexOf(name);
-    if (idx === -1) return;
+    if (process.env.NODE_ENV !== 'production') {
+      warn('this method will be deprecated, you can still override your rules with `extend`');
+    }
 
-    TARGET_RULES.splice(idx, 1);
-  }
-
-  /**
-   * Checks if the given rule name is a rule that targets other fields.
-   */
-  static isTargetRule (name: string): boolean {
-    return TARGET_RULES.indexOf(name) !== -1;
-  }
-
-  /**
-   * Sets the operating mode for all newly created validators.
-   * strictMode = true: Values without a rule are invalid and cause failure.
-   * strictMode = false: Values without a rule are valid and are skipped.
-   */
-  static setStrictMode (strictMode?: boolean = true) {
-    STRICT_MODE = strictMode;
+    RuleContainer.remove(name);
   }
 
   /**
    * Adds and sets the current locale for the validator.
-   */
+  */
   localize (lang: string, dictionary?: MapObject): void {
     Validator.localize(lang, dictionary);
   }
@@ -159,7 +170,7 @@ export default class Validator {
    */
   static localize (lang: string | MapObject, dictionary?: MapObject) {
     if (isObject(lang)) {
-      Validator.dictionary.merge(lang);
+      Dictionary.getDriver().merge(lang);
       return;
     }
 
@@ -167,7 +178,7 @@ export default class Validator {
     if (dictionary) {
       const locale = lang || dictionary.name;
       dictionary = assign({}, dictionary);
-      Validator.dictionary.merge({
+      Dictionary.getDriver().merge({
         [locale]: dictionary
       });
     }
@@ -181,45 +192,42 @@ export default class Validator {
   /**
    * Registers a field to be validated.
    */
-  attach (field: FieldOptions | Field): Field {
-    // deprecate: handle old signature.
-    /* istanbul ignore next */
-    if (arguments.length > 1) {
-      warn('This signature of the attach method has been deprecated, please consult the docs.');
-      field = assign({}, {
-        name: arguments[0],
-        rules: arguments[1]
-      }, arguments[2] || { vm: { $validator: this } });
+  attach (fieldOpts: FieldOptions): Field {
+    // We search for a field with the same name & scope, having persist enabled
+    const oldFieldMatcher = { name: fieldOpts.name, scope: fieldOpts.scope, persist: true };
+    const oldField = fieldOpts.persist ? this.fields.find(oldFieldMatcher) : null;
+
+    if (oldField) {
+      // We keep the flags of the old field, then we remove its instance
+      fieldOpts.flags = oldField.flags;
+      oldField.destroy();
+      this.fields.remove(oldField);
     }
 
     // fixes initial value detection with v-model and select elements.
-    const value = field.initialValue;
-    if (!(field instanceof Field)) {
-      field = new Field(field);
-    }
-
+    const value = fieldOpts.initialValue;
+    const field = new Field(fieldOpts);
     this.fields.push(field);
 
     // validate the field initially
-    if (field.initial) {
-      this.validate(`#${field.id}`, value || field.value);
+    if (field.immediate) {
+      this.$vee._vm.$nextTick(() => this.validate(`#${field.id}`, value || field.value, { vmId: fieldOpts.vmId }));
     } else {
-      this._validate(field, value || field.value, true).then(result => {
+      this._validate(field, value || field.value, { initial: true }).then(result => {
         field.flags.valid = result.valid;
         field.flags.invalid = !result.valid;
       });
     }
 
-    this._addFlag(field, field.scope);
     return field;
   }
 
   /**
    * Sets the flags on a field.
    */
-  flag (name: string, flags: { [string]: boolean }) {
-    const field = this._resolveField(name);
-    if (! field || !flags) {
+  flag (name: string, flags: { [string]: boolean }, uid = null) {
+    const field = this._resolveField(name, undefined, uid);
+    if (!field || !flags) {
       return;
     }
 
@@ -229,21 +237,16 @@ export default class Validator {
   /**
    * Removes a field from the validator.
    */
-  detach (name: string, scope?: string | null) {
-    let field = name instanceof Field ? name : this._resolveField(name, scope);
+  detach (name: string, scope?: string | null, uid) {
+    let field = isCallable(name.destroy) ? name : this._resolveField(name, scope, uid);
     if (!field) return;
 
-    field.destroy();
-    this.errors.remove(field.name, field.scope, field.id);
-    this.fields.remove(field);
-    const flags = this.flags;
-    if (!isNullOrUndefined(field.scope) && flags[`$${field.scope}`]) {
-      delete flags[`$${field.scope}`][field.name];
-    } else if (isNullOrUndefined(field.scope)) {
-      delete flags[field.name];
+    // We destroy/remove the field & error instances if it's not a `persist` one
+    if (!field.persist) {
+      field.destroy();
+      this.errors.remove(field.name, field.scope, field.vmId);
+      this.fields.remove(field);
     }
-
-    this.flags = assign({}, flags);
   }
 
   /**
@@ -253,14 +256,16 @@ export default class Validator {
     Validator.extend(name, validator, options);
   }
 
-  async reset (matcher) {
+  reset (matcher) {
     // two ticks
-    await this._vm.$nextTick();
-    await this._vm.$nextTick();
-
-    this.fields.filter(matcher).forEach(field => {
-      field.reset(); // reset field flags.
-      this.errors.remove(field.name, field.scope, field.id);
+    return this.$vee._vm.$nextTick().then(() => {
+      return this.$vee._vm.$nextTick();
+    }).then(() => {
+      this.fields.filter(matcher).forEach(field => {
+        field.waitFor(null);
+        field.reset(); // reset field flags.
+        this.errors.remove(field.name, field.scope, matcher && matcher.vmId);
+      });
     });
   }
 
@@ -273,17 +278,11 @@ export default class Validator {
 
     // remove old scope.
     this.errors.update(id, { scope });
-    if (!isNullOrUndefined(field.scope) && this.flags[`$${field.scope}`]) {
-      delete this.flags[`$${field.scope}`][field.name];
-    } else if (isNullOrUndefined(field.scope)) {
-      delete this.flags[field.name];
-    }
-
-    this._addFlag(field, scope);
   }
 
   /**
    * Removes a rule from the list of validators.
+   * @deprecated
    */
   remove (name: string) {
     Validator.remove(name);
@@ -292,45 +291,47 @@ export default class Validator {
   /**
    * Validates a value against a registered field validations.
    */
-  async validate (name: string, value: any, scope?: string | null = null, silent?: boolean = false): Promise<boolean> {
+  validate (fieldDescriptor: string, value?: any, { silent, vmId } = {}): Promise<boolean> {
     if (this.paused) return Promise.resolve(true);
 
     // overload to validate all.
-    if (arguments.length === 0) {
-      return this.validateScopes();
+    if (isNullOrUndefined(fieldDescriptor)) {
+      return this.validateScopes({ silent, vmId });
     }
 
     // overload to validate scope-less fields.
-    if (arguments.length === 1 && arguments[0] === '*') {
-      return this.validateAll();
+    if (fieldDescriptor === '*') {
+      return this.validateAll(undefined, { silent, vmId });
     }
 
-    // overload to validate a scope.
-    if (arguments.length === 1 && typeof arguments[0] === 'string' && /^(.+)\.\*$/.test(arguments[0])) {
-      const matched = arguments[0].match(/^(.+)\.\*$/)[1];
+    // if scope validation was requested.
+    if (/^(.+)\.\*$/.test(fieldDescriptor)) {
+      const matched = fieldDescriptor.match(/^(.+)\.\*$/)[1];
       return this.validateAll(matched);
     }
 
-    const field = this._resolveField(name, scope);
+    const field = this._resolveField(fieldDescriptor);
     if (!field) {
-      return this._handleFieldNotFound(name, scope);
+      return this._handleFieldNotFound(fieldDescriptor);
     }
 
     if (!silent) field.flags.pending = true;
-    if (arguments.length === 1) {
+    if (value === undefined) {
       value = field.value;
     }
 
-    if (field.isDisabled) {
-      return true;
-    }
+    const validationPromise = this._validate(field, value);
+    field.waitFor(validationPromise);
 
-    const result = await this._validate(field, value);
-    if (!silent) {
-      this._handleValidationResults([result]);
-    }
+    return validationPromise.then(result => {
+      if (!silent && field.isWaitingFor(validationPromise)) {
+        // allow next validation to mutate the state.
+        field.waitFor(null);
+        this._handleValidationResults([result], vmId);
+      }
 
-    return result.valid;
+      return result.valid;
+    });
   }
 
   /**
@@ -354,60 +355,102 @@ export default class Validator {
   /**
    * Validates each value against the corresponding field validations.
    */
-  async validateAll (values?: string | MapObject, scope?: string | null = null, silent?: boolean = false): Promise<boolean> {
-    if (this.paused) return true;
+  validateAll (values?: string | MapObject, { silent, vmId } = {}): Promise<boolean> {
+    if (this.paused) return Promise.resolve(true);
 
     let matcher = null;
     let providedValues = false;
 
     if (typeof values === 'string') {
-      matcher = { scope: values };
+      matcher = { scope: values, vmId };
     } else if (isObject(values)) {
       matcher = Object.keys(values).map(key => {
-        return { name: key, scope };
+        return { name: key, vmId: vmId, scope: null };
       });
       providedValues = true;
     } else if (Array.isArray(values)) {
       matcher = values.map(key => {
-        return { name: key, scope };
+        return typeof key === 'object' ? Object.assign({ vmId: vmId }, key) : { name: key, vmId: vmId };
       });
     } else {
-      matcher = { scope };
+      matcher = { scope: null, vmId: vmId };
     }
 
-    const results = await Promise.all(
+    return Promise.all(
       this.fields.filter(matcher).map(field => this._validate(field, providedValues ? values[field.name] : field.value))
-    );
+    ).then(results => {
+      if (!silent) {
+        this._handleValidationResults(results, vmId);
+      }
 
-    if (!silent) {
-      this._handleValidationResults(results);
-    }
-
-    return results.every(t => t.valid);
+      return results.every(t => t.valid);
+    });
   }
 
   /**
    * Validates all scopes.
    */
-  async validateScopes (silent?: boolean = false): Promise<boolean> {
-    if (this.paused) return true;
+  validateScopes ({ silent, vmId } = {}): Promise<boolean> {
+    if (this.paused) return Promise.resolve(true);
 
-    const results = await Promise.all(
-      this.fields.map(field => this._validate(field, field.value))
-    );
+    return Promise.all(
+      this.fields.filter({ vmId }).map(field => this._validate(field, field.value))
+    ).then(results => {
+      if (!silent) {
+        this._handleValidationResults(results, vmId);
+      }
 
-    if (!silent) {
-      this._handleValidationResults(results);
+      return results.every(t => t.valid);
+    });
+  }
+
+  /**
+   * Validates a value against the rules.
+   */
+  verify (value: any, rules: string | MapObject, options?: VerifyOptions = {}): Promise<VerifyOptions> {
+    const field = {
+      name: (options && options.name) || '{field}',
+      rules: normalizeRules(rules),
+      bails: getPath('bails', options, true),
+      forceRequired: false,
+      get isRequired () {
+        return !!this.rules.required || this.forceRequired;
+      }
+    };
+
+    const targetRules = Object.keys(field.rules).filter(RuleContainer.isTargetRule);
+    if (targetRules.length && options && isObject(options.values)) {
+      field.dependencies = targetRules.map(rule => {
+        const [targetKey] = field.rules[rule];
+
+        return {
+          name: rule,
+          field: { value: options.values[targetKey] }
+        };
+      });
     }
 
-    return results.every(t => t.valid);
+    return this._validate(field, value).then(result => {
+      const errors = [];
+      const ruleMap = {};
+      result.errors.forEach(e => {
+        errors.push(e.msg);
+        ruleMap[e.rule] = e.msg;
+      });
+
+      return {
+        valid: result.valid,
+        errors,
+        failedRules: ruleMap
+      };
+    });
   }
 
   /**
    * Perform cleanup.
    */
   destroy () {
-    this._vm.$off('localeChanged', this._localeListener);
+    this.$vee._vm.$off('localeChanged');
   }
 
   /**
@@ -431,14 +474,7 @@ export default class Validator {
       format = validations.date_format[0];
     }
 
-    return format || this.dictionary.getDateFormat(this.locale);
-  }
-
-  /**
-   * Checks if the passed rule is a date rule.
-   */
-  _isADateRule (rule: string) {
-    return !! ~['after', 'before', 'date_between', 'date_format'].indexOf(rule);
+    return format || Dictionary.getDriver().getDateFormat(this.locale);
   }
 
   /**
@@ -448,54 +484,98 @@ export default class Validator {
     const name = this._getFieldDisplayName(field);
     const params = this._getLocalizedParams(rule, targetName);
 
-    return this.dictionary.getFieldMessage(this.locale, field.name, rule.name, [name, params, data]);
+    return Dictionary.getDriver().getFieldMessage(this.locale, field.name, rule.name, [name, params, data]);
+  }
+
+  /**
+   * We need to convert any object param to an array format since the locales do not handle params as objects yet.
+   */
+  _convertParamObjectToArray (obj, ruleName) {
+    if (Array.isArray(obj)) {
+      return obj;
+    }
+
+    const paramNames = RuleContainer.getParamNames(ruleName);
+    if (!paramNames || !isObject(obj)) {
+      return obj;
+    }
+
+    return paramNames.reduce((prev, paramName) => {
+      if (paramName in obj) {
+        prev.push(obj[paramName]);
+      }
+
+      return prev;
+    }, []);
   }
 
   /**
    * Translates the parameters passed to the rule (mainly for target fields).
    */
   _getLocalizedParams (rule: MapObject, targetName?: string | null = null) {
-    if (~TARGET_RULES.indexOf(rule.name) && rule.params && rule.params[0]) {
-      const localizedName = targetName || this.dictionary.getAttribute(this.locale, rule.params[0], rule.params[0]);
-      return [localizedName].concat(rule.params.slice(1));
+    let params = this._convertParamObjectToArray(rule.params, rule.name);
+    if (rule.options.hasTarget && params && params[0]) {
+      const localizedName = targetName || Dictionary.getDriver().getAttribute(this.locale, params[0], params[0]);
+      return [localizedName].concat(params.slice(1));
     }
 
-    return rule.params;
+    return params;
   }
 
   /**
    * Resolves an appropriate display name, first checking 'data-as' or the registered 'prettyName'
    */
   _getFieldDisplayName (field: Field) {
-    return field.alias || this.dictionary.getAttribute(this.locale, field.name, field.name);
+    return field.alias || Dictionary.getDriver().getAttribute(this.locale, field.name, field.name);
   }
 
   /**
-   * Adds a field flags to the flags collection.
+   * Converts an array of params to an object with named properties.
+   * Only works if the rule is configured with a paramNames array.
+   * Returns the same params if it cannot convert it.
    */
-  _addFlag (field: Field, scope?: string | null = null) {
-    if (isNullOrUndefined(scope)) {
-      this.flags = assign({}, this.flags, { [`${field.name}`]: field.flags });
-      return;
+  _convertParamArrayToObj (params, ruleName): MapObject | Array {
+    const paramNames = RuleContainer.getParamNames(ruleName);
+    if (!paramNames) {
+      return params;
     }
 
-    const scopeObj = assign({}, this.flags[`$${scope}`] || {}, { [`${field.name}`]: field.flags });
-    this.flags = assign({}, this.flags, { [`$${scope}`]: scopeObj });
+    if (isObject(params)) {
+      // check if the object is either a config object or a single parameter that is an object.
+      const hasKeys = paramNames.some(name => Object.keys(params).indexOf(name) !== -1);
+      // if it has some of the keys, return it as is.
+      if (hasKeys) {
+        return params;
+      }
+      // otherwise wrap the object in an array.
+      params = [params];
+    }
+
+    // Reduce the paramsNames to a param object.
+    return params.reduce((prev, value, idx) => {
+      prev[paramNames[idx]] = value;
+
+      return prev;
+    }, {});
   }
 
   /**
    * Tests a single input value against a rule.
    */
   _test (field: Field, value: any, rule: MapObject): ValidationResult | Promise<ValidationResult> {
-    const validator = RULES[rule.name];
-    let params = Array.isArray(rule.params) ? toArray(rule.params) : [];
+    const validator = RuleContainer.getValidatorMethod(rule.name);
+    let params = Array.isArray(rule.params) ? toArray(rule.params) : rule.params;
+    if (!params) {
+      params = [];
+    }
+
     let targetName = null;
     if (!validator || typeof validator !== 'function') {
-      throw createError(`No such validator '${rule.name}' exists.`);
+      return Promise.reject(createError(`No such validator '${rule.name}' exists.`));
     }
 
     // has field dependencies.
-    if (TARGET_RULES.indexOf(rule.name) !== -1) {
+    if (rule.options.hasTarget && field.dependencies) {
       const target = find(field.dependencies, d => d.name === rule.name);
       if (target) {
         targetName = target.field.alias;
@@ -506,14 +586,14 @@ export default class Validator {
       params = params.length ? params : [true];
     }
 
-    if (this._isADateRule(rule.name)) {
+    if (rule.options.isDate) {
       const dateFormat = this._getDateFormat(field.rules);
       if (rule.name !== 'date_format') {
         params.push(dateFormat);
       }
     }
 
-    let result = validator(value, params);
+    let result = validator(value, this._convertParamArrayToObj(params, rule.name));
 
     // If it is a promise.
     if (isCallable(result.then)) {
@@ -529,6 +609,7 @@ export default class Validator {
 
         return {
           valid: allValid,
+          data: result.data,
           errors: allValid ? [] : [this._createFieldError(field, rule, data, targetName)]
         };
       });
@@ -540,6 +621,7 @@ export default class Validator {
 
     return {
       valid: result.valid,
+      data: result.data,
       errors: result.valid ? [] : [this._createFieldError(field, rule, result.data, targetName)]
     };
   }
@@ -547,16 +629,17 @@ export default class Validator {
   /**
    * Merges a validator object into the RULES and Messages.
    */
-  static _merge (name: string, validator: Rule) {
-    if (isCallable(validator)) {
-      RULES[name] = validator;
-      return;
+  static _merge (name: string, { validator, options, paramNames }) {
+    const validate = isCallable(validator) ? validator : validator.validate;
+    if (validator.getMessage) {
+      Dictionary.getDriver().setMessage(Validator.locale, name, validator.getMessage);
     }
 
-    RULES[name] = validator.validate;
-    if (validator.getMessage) {
-      Validator.dictionary.setMessage(this.locale, name, validator.getMessage);
-    }
+    RuleContainer.add(name, {
+      validate,
+      options,
+      paramNames
+    });
   }
 
   /**
@@ -580,6 +663,7 @@ export default class Validator {
   _createFieldError (field: Field, rule: MapObject, data: MapObject, targetName?: string): FieldError {
     return {
       id: field.id,
+      vmId: field.vmId,
       field: field.name,
       msg: this._formatErrorMessage(field, rule, data, targetName),
       rule: rule.name,
@@ -593,41 +677,47 @@ export default class Validator {
   /**
    * Tries different strategies to find a field.
    */
-  _resolveField (name: string, scope: string | null): ?Field {
-    if (!isNullOrUndefined(scope)) {
-      return this.fields.find({ name, scope });
-    }
-
+  _resolveField (name: string, scope: string | null, uid): ?Field {
     if (name[0] === '#') {
-      return this.fields.find({ id: name.slice(1) });
+      return this.fields.findById(name.slice(1));
     }
 
-    if (name.indexOf('.') > -1) {
+    if (!isNullOrUndefined(scope)) {
+      return this.fields.find({ name, scope, vmId: uid });
+    }
+
+    if (includes(name, '.')) {
       const [fieldScope, ...fieldName] = name.split('.');
-      const field = this.fields.find({ name: fieldName.join('.'), scope: fieldScope });
+      const field = this.fields.find({ name: fieldName.join('.'), scope: fieldScope, vmId: uid });
       if (field) {
         return field;
       }
     }
 
-    return this.fields.find({ name, scope: null });
+    return this.fields.find({ name, scope: null, vmId: uid });
   }
 
   /**
-   * Handles when a field is not found depending on the strict flag.
+   * Handles when a field is not found.
    */
   _handleFieldNotFound (name: string, scope?: string | null) {
-    if (!this.strict) return true;
-
     const fullName = isNullOrUndefined(scope) ? name : `${!isNullOrUndefined(scope) ? scope + '.' : ''}${name}`;
-    throw createError(
+
+    return Promise.reject(createError(
       `Validating a non-existent field: "${fullName}". Use "attach()" first.`
-    );
+    ));
   }
 
-  _handleValidationResults (results) {
+  /**
+   * Handles validation results.
+   */
+  _handleValidationResults (results, vmId) {
     const matchers = results.map(result => ({ id: result.id }));
     this.errors.removeById(matchers.map(m => m.id));
+    // remove by name and scope to remove any custom errors added.
+    results.forEach(result => {
+      this.errors.remove(result.field, result.scope, vmId);
+    });
     const allErrors = results.reduce((prev, curr) => {
       prev.push(...curr.errors);
 
@@ -647,23 +737,71 @@ export default class Validator {
     });
   }
 
+  _shouldSkip (field, value) {
+    // field is configured to run through the pipeline regardless
+    if (field.bails === false) {
+      return false;
+    }
+
+    // disabled fields are skipped if useConstraintAttrs is enabled in config
+    if (field.isDisabled && getConfig().useConstraintAttrs) {
+      return true;
+    }
+
+    // skip if the field is not required and has an empty value.
+    return !field.isRequired && (isNullOrUndefined(value) || value === '' || isEmptyArray(value));
+  }
+
+  _shouldBail (field) {
+    // if the field was configured explicitly.
+    if (field.bails !== undefined) {
+      return field.bails;
+    }
+
+    return this.fastExit;
+  }
+
   /**
    * Starts the validation process.
    */
-  async _validate (field: Field, value: any): Promise<ValidationResult> {
-    if (!field.isRequired && (isNullOrUndefined(value) || value === '')) {
-      return { valid: true, id: field.id, errors: [] };
+  _validate (field: Field, value: any, { initial } = {}): Promise<ValidationResult> {
+    let requireRules = Object.keys(field.rules).filter(RuleContainer.isRequireRule);
+
+    field.forceRequired = false;
+    requireRules.forEach(rule => {
+      let ruleOptions = RuleContainer.getOptions(rule);
+      let result = this._test(field, value, { name: rule, params: field.rules[rule], options: ruleOptions });
+
+      if (isCallable(result.then)) { throw createError('Require rules cannot be async'); }
+      if (!isObject(result)) { throw createError('Require rules has to return an object (see docs)'); }
+
+      if (result.data.required === true) {
+        field.forceRequired = true;
+      }
+    });
+
+    if (this._shouldSkip(field, value)) {
+      return Promise.resolve({ valid: true, id: field.id, field: field.name, scope: field.scope, errors: [] });
     }
 
     const promises = [];
     const errors = [];
     let isExitEarly = false;
+    if (isCallable(field.checkValueChanged)) {
+      field.flags.changed = field.checkValueChanged();
+    }
+
     // use of '.some()' is to break iteration in middle by returning true
-    Object.keys(field.rules).some(rule => {
-      const result = this._test(field, value, { name: rule, params: field.rules[rule] });
+    Object.keys(field.rules).filter(rule => {
+      if (!initial || !RuleContainer.has(rule)) return true;
+
+      return RuleContainer.isImmediate(rule);
+    }).some(rule => {
+      const ruleOptions = RuleContainer.getOptions(rule);
+      const result = this._test(field, value, { name: rule, params: field.rules[rule], options: ruleOptions });
       if (isCallable(result.then)) {
         promises.push(result);
-      } else if (this.fastExit && !result.valid) {
+      } else if (!result.valid && this._shouldBail(field)) {
         errors.push(...result.errors);
         isExitEarly = true;
       } else {
@@ -675,17 +813,19 @@ export default class Validator {
     });
 
     if (isExitEarly) {
-      return { valid: false, errors, id: field.id };
+      return Promise.resolve({ valid: false, errors, id: field.id, field: field.name, scope: field.scope });
     }
 
-    return (await Promise.all(promises)).reduce((prev, v) => {
-      if (!v.valid) {
-        prev.errors.push(...v.errors);
-      }
+    return Promise.all(promises).then(results => {
+      return results.reduce((prev, v) => {
+        if (!v.valid) {
+          prev.errors.push(...v.errors);
+        }
 
-      prev.valid = prev.valid && v.valid;
+        prev.valid = prev.valid && v.valid;
 
-      return prev;
-    }, { valid: true, errors, id: field.id });
+        return prev;
+      }, { valid: true, errors, id: field.id, field: field.name, scope: field.scope });
+    });
   }
 }

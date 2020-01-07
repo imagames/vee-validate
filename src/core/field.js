@@ -1,3 +1,6 @@
+import Resolver from './resolver';
+import RuleContainer from './ruleContainer';
+import { isEvent, addEventListener, normalizeEvents } from '../utils/events';
 import {
   uniqId,
   createFlags,
@@ -5,7 +8,6 @@ import {
   normalizeRules,
   isNullOrUndefined,
   getDataAttribute,
-  setDataAttribute,
   toggleClass,
   isTextInput,
   debounce,
@@ -13,20 +15,20 @@ import {
   warn,
   toArray,
   getPath,
-  makeEventsArray,
   makeDelayObject,
+  defineNonReactive,
   merge,
   isObject,
-  addEventListener
-} from './utils';
-import Generator from './generator';
-import Validator from './validator';
+  isCheckboxOrRadioInput,
+  includes
+} from '../utils';
 
 // @flow
 
 const DEFAULT_OPTIONS = {
   targetOf: null,
-  initial: false,
+  immediate: false,
+  persist: false,
   scope: null,
   listen: true,
   name: null,
@@ -66,7 +68,7 @@ export default class Field {
   name: string;
   scope: string | null;
   targetOf: ?string;
-  initial: boolean;
+  immediate: boolean;
   classes: boolean;
   classNames: { [string]: string };
   delay: number | Object;
@@ -80,21 +82,23 @@ export default class Field {
     this.id = uniqId();
     this.el = options.el;
     this.updated = false;
-    this.dependencies = [];
-    this.watchers = [];
-    this.events = [];
+    this.vmId = options.vmId;
+    defineNonReactive(this, 'dependencies', []);
+    defineNonReactive(this, 'watchers', []);
+    defineNonReactive(this, 'events', []);
     this.delay = 0;
     this.rules = {};
+    this.forceRequired = false;
     this._cacheId(options);
     this.classNames = assign({}, DEFAULT_OPTIONS.classNames);
     options = assign({}, DEFAULT_OPTIONS, options);
     this._delay = !isNullOrUndefined(options.delay) ? options.delay : 0; // cache initial delay
     this.validity = options.validity;
     this.aria = options.aria;
-    this.flags = createFlags();
-    this.vm = options.vm;
-    this.component = options.component;
-    this.ctorConfig = this.component ? getPath('$options.$_veeValidate', this.component) : undefined;
+    this.flags = options.flags || createFlags();
+    defineNonReactive(this, 'vm', options.vm);
+    defineNonReactive(this, 'componentInstance', options.component);
+    this.ctorConfig = this.componentInstance ? getPath('$options.$_veeValidate', this.componentInstance) : undefined;
     this.update(options);
     // set initial value.
     this.initialValue = this.value;
@@ -103,19 +107,18 @@ export default class Field {
 
   get validator (): any {
     if (!this.vm || !this.vm.$validator) {
-      warn('No validator instance detected.');
-      return { validate: () => {} };
+      return { validate: () => Promise.resolve(true) };
     }
 
     return this.vm.$validator;
   }
 
   get isRequired (): boolean {
-    return !!this.rules.required;
+    return !!this.rules.required || this.forceRequired;
   }
 
   get isDisabled (): boolean {
-    return !!(this.component && this.component.disabled) || !!(this.el && this.el.disabled);
+    return !!(this.el && this.el.disabled);
   }
 
   /**
@@ -127,12 +130,16 @@ export default class Field {
     }
 
     let alias = null;
-    if (this.el) {
+    if (this.ctorConfig && this.ctorConfig.alias) {
+      alias = isCallable(this.ctorConfig.alias) ? this.ctorConfig.alias.call(this.componentInstance) : this.ctorConfig.alias;
+    }
+
+    if (!alias && this.el) {
       alias = getDataAttribute(this.el, 'as');
     }
 
-    if (!alias && this.component) {
-      return this.component.$attrs && this.component.$attrs['data-vv-as'];
+    if (!alias && this.componentInstance) {
+      return this.componentInstance.$attrs && this.componentInstance.$attrs['data-vv-as'];
     }
 
     return alias;
@@ -150,12 +157,16 @@ export default class Field {
     return this.getter();
   }
 
+  get bails () {
+    return this._bails;
+  }
+
   /**
    * If the field rejects false as a valid value for the required rule.
    */
 
   get rejectsFalse (): boolean {
-    if (this.component && this.ctorConfig) {
+    if (this.componentInstance && this.ctorConfig) {
       return !!this.ctorConfig.rejectsFalse;
     }
 
@@ -178,6 +189,11 @@ export default class Field {
       return this.id === options.id;
     }
 
+    let matchesComponentId = isNullOrUndefined(options.vmId) ? () => true : (id) => id === this.vmId;
+    if (!matchesComponentId(options.vmId)) {
+      return false;
+    }
+
     if (options.name === undefined && options.scope === undefined) {
       return true;
     }
@@ -198,8 +214,19 @@ export default class Field {
    */
   _cacheId (options: FieldOptions): void {
     if (this.el && !options.targetOf) {
-      setDataAttribute(this.el, 'id', this.id); // cache field id if it is independent and has a root element.
+      this.el._veeValidateId = this.id;
     }
+  }
+
+  /**
+   * Keeps a reference of the most current validation run.
+   */
+  waitFor (pendingPromise) {
+    this._waitingFor = pendingPromise;
+  }
+
+  isWaitingFor (promise) {
+    return this._waitingFor === promise;
   }
 
   /**
@@ -207,7 +234,8 @@ export default class Field {
    */
   update (options: Object) {
     this.targetOf = options.targetOf || null;
-    this.initial = options.initial || this.initial || false;
+    this.immediate = options.immediate || this.immediate || false;
+    this.persist = options.persist || this.persist || false;
 
     // update errors scope if the field scope was changed.
     if (!isNullOrUndefined(options.scope) && options.scope !== this.scope && isCallable(this.validator.update)) {
@@ -217,24 +245,32 @@ export default class Field {
       : !isNullOrUndefined(this.scope) ? this.scope : null;
     this.name = (!isNullOrUndefined(options.name) ? String(options.name) : options.name) || this.name || null;
     this.rules = options.rules !== undefined ? normalizeRules(options.rules) : this.rules;
+    this._bails = options.bails !== undefined ? options.bails : this._bails;
     this.model = options.model || this.model;
     this.listen = options.listen !== undefined ? options.listen : this.listen;
-    this.classes = (options.classes || this.classes || false) && !this.component;
+    this.classes = (options.classes || this.classes || false) && !this.componentInstance;
     this.classNames = isObject(options.classNames) ? merge(this.classNames, options.classNames) : this.classNames;
     this.getter = isCallable(options.getter) ? options.getter : this.getter;
     this._alias = options.alias || this._alias;
-    this.events = (options.events) ? makeEventsArray(options.events) : this.events;
-    this.delay = (options.delay) ? makeDelayObject(this.events, options.delay, this._delay) : makeDelayObject(this.events, this.delay, this._delay);
+    this.events = (options.events) ? normalizeEvents(options.events) : this.events;
+    this.delay = makeDelayObject(this.events, options.delay || this.delay, this._delay);
     this.updateDependencies();
     this.addActionListeners();
 
-    if (!this.name) {
+    if (process.env.NODE_ENV !== 'production' && !this.name && !this.targetOf) {
       warn('A field is missing a "name" or "data-vv-name" attribute');
     }
 
     // update required flag flags
     if (options.rules !== undefined) {
       this.flags.required = this.isRequired;
+    }
+
+    if (Object.keys(options.rules || {}).length === 0 && this.updated) {
+      let resetFlag = this.flags.validated;
+      this.validator.validate(`#${this.id}`).then(() => {
+        this.flags.validated = resetFlag;
+      });
     }
 
     // validate if it was validated before and field was updated and there was a rules mutation.
@@ -258,13 +294,23 @@ export default class Field {
    * Resets field flags and errors.
    */
   reset () {
+    if (this._cancellationToken) {
+      this._cancellationToken.cancelled = true;
+      delete this._cancellationToken;
+    }
+
     const defaults = createFlags();
     Object.keys(this.flags).filter(flag => flag !== 'required').forEach(flag => {
       this.flags[flag] = defaults[flag];
     });
 
+    // update initial value
+    this.initialValue = this.value;
+    this.flags.changed = false;
+
+    this.addValueListeners();
     this.addActionListeners();
-    this.updateClasses();
+    this.updateClasses(true);
     this.updateAriaAttrs();
     this.updateCustomValidity();
   }
@@ -313,13 +359,8 @@ export default class Field {
 
     // we get the selectors for each field.
     const fields = Object.keys(this.rules).reduce((prev, r) => {
-      if (Validator.isTargetRule(r)) {
-        let selector = this.rules[r][0];
-        if (r === 'confirmed' && !selector) {
-          selector = `${this.name}_confirmation`;
-        }
-
-        prev.push({ selector, name: r });
+      if (RuleContainer.isTargetRule(r)) {
+        prev.push({ selector: this.rules[r][0], name: r });
       }
 
       return prev;
@@ -329,28 +370,8 @@ export default class Field {
 
     // must be contained within the same component, so we use the vm root element constrain our dom search.
     fields.forEach(({ selector, name }) => {
-      let el = null;
-      // vue ref selector.
-      if (selector[0] === '$') {
-        const ref = this.vm.$refs[selector.slice(1)];
-        el = Array.isArray(ref) ? ref[0] : ref;
-      } else {
-        try {
-          // try query selector
-          el = this.vm.$el.querySelector(selector);
-        } catch (err) {
-          el = null;
-        }
-      }
-
-      if (!el) {
-        try {
-          el = this.vm.$el.querySelector(`input[name="${selector}"]`);
-        } catch (err) {
-          el = null;
-        }
-      }
-
+      const ref = this.vm.$refs[selector];
+      const el = Array.isArray(ref) ? ref[0] : ref;
       if (!el) {
         return;
       }
@@ -362,7 +383,7 @@ export default class Field {
         delay: this.delay,
         scope: this.scope,
         events: this.events.join('|'),
-        initial: this.initial,
+        immediate: this.immediate,
         targetOf: this.id
       };
 
@@ -370,10 +391,10 @@ export default class Field {
       if (isCallable(el.$watch)) {
         options.component = el;
         options.el = el.$el;
-        options.getter = Generator.resolveGetter(el.$el, { child: el });
+        options.getter = Resolver.resolveGetter(el.$el, el.$vnode);
       } else {
         options.el = el;
-        options.getter = Generator.resolveGetter(el, {});
+        options.getter = Resolver.resolveGetter(el, {});
       }
 
       this.dependencies.push({ name, field: new Field(options) });
@@ -397,21 +418,37 @@ export default class Field {
   /**
    * Updates the element classes depending on each field flag status.
    */
-  updateClasses () {
+  updateClasses (isReset = false) {
     if (!this.classes || this.isDisabled) return;
+    const applyClasses = (el) => {
+      toggleClass(el, this.classNames.dirty, this.flags.dirty);
+      toggleClass(el, this.classNames.pristine, this.flags.pristine);
+      toggleClass(el, this.classNames.touched, this.flags.touched);
+      toggleClass(el, this.classNames.untouched, this.flags.untouched);
 
-    toggleClass(this.el, this.classNames.dirty, this.flags.dirty);
-    toggleClass(this.el, this.classNames.pristine, this.flags.pristine);
-    toggleClass(this.el, this.classNames.touched, this.flags.touched);
-    toggleClass(this.el, this.classNames.untouched, this.flags.untouched);
-    // make sure we don't set any classes if the state is undetermined.
-    if (!isNullOrUndefined(this.flags.valid) && this.flags.validated) {
-      toggleClass(this.el, this.classNames.valid, this.flags.valid);
+      // remove valid/invalid classes on reset.
+      if (isReset) {
+        toggleClass(el, this.classNames.valid, false);
+        toggleClass(el, this.classNames.invalid, false);
+      }
+
+      // make sure we don't set any classes if the state is undetermined.
+      if (!isNullOrUndefined(this.flags.valid) && this.flags.validated) {
+        toggleClass(el, this.classNames.valid, this.flags.valid);
+      }
+
+      if (!isNullOrUndefined(this.flags.invalid) && this.flags.validated) {
+        toggleClass(el, this.classNames.invalid, this.flags.invalid);
+      }
+    };
+
+    if (!isCheckboxOrRadioInput(this.el)) {
+      applyClasses(this.el);
+      return;
     }
 
-    if (!isNullOrUndefined(this.flags.invalid) && this.flags.validated) {
-      toggleClass(this.el, this.classNames.invalid, this.flags.invalid);
-    }
+    const els = document.querySelectorAll(`input[name="${this.el.name}"]`);
+    toArray(els).forEach(applyClasses);
   }
 
   /**
@@ -448,19 +485,19 @@ export default class Field {
       this.unwatch(/^class_input$/);
     };
 
-    if (this.component && isCallable(this.component.$once)) {
-      this.component.$once('input', onInput);
-      this.component.$once('blur', onBlur);
+    if (this.componentInstance && isCallable(this.componentInstance.$once)) {
+      this.componentInstance.$once('input', onInput);
+      this.componentInstance.$once('blur', onBlur);
       this.watchers.push({
         tag: 'class_input',
         unwatch: () => {
-          this.component.$off('input', onInput);
+          this.componentInstance.$off('input', onInput);
         }
       });
       this.watchers.push({
         tag: 'class_blur',
         unwatch: () => {
-          this.component.$off('blur', onBlur);
+          this.componentInstance.$off('blur', onBlur);
         }
       });
       return;
@@ -470,7 +507,7 @@ export default class Field {
 
     addEventListener(this.el, inputEvent, onInput);
     // Checkboxes and radio buttons on Mac don't emit blur naturally, so we listen on click instead.
-    const blurEvent = ['radio', 'checkbox'].indexOf(this.el.type) === -1 ? 'blur' : 'click';
+    const blurEvent = isCheckboxOrRadioInput(this.el) ? 'change' : 'blur';
     addEventListener(this.el, blurEvent, onBlur);
     this.watchers.push({
       tag: 'class_input',
@@ -497,101 +534,163 @@ export default class Field {
   }
 
   /**
+   * Determines the suitable primary event to listen for.
+   */
+  _determineInputEvent () {
+    // if its a custom component, use the customized model event or the input event.
+    if (this.componentInstance) {
+      return (this.componentInstance.$options.model && this.componentInstance.$options.model.event) || 'input';
+    }
+
+    if (this.model && this.model.lazy) {
+      return 'change';
+    }
+
+    if (isTextInput(this.el)) {
+      return 'input';
+    }
+
+    return 'change';
+  }
+
+  /**
+   * Determines the list of events to listen to.
+   */
+  _determineEventList (defaultInputEvent) {
+    // if no event is configured, or it is a component or a text input then respect the user choice.
+    if (!this.events.length || this.componentInstance || isTextInput(this.el)) {
+      return [...this.events].map(evt => {
+        if (evt === 'input' && this.model && this.model.lazy) {
+          return 'change';
+        }
+
+        return evt;
+      });
+    }
+
+    // force suitable event for non-text type fields.
+    return this.events.map(e => {
+      if (e === 'input') {
+        return defaultInputEvent;
+      }
+
+      return e;
+    });
+  }
+
+  /**
    * Adds the listeners required for validation.
    */
   addValueListeners () {
     this.unwatch(/^input_.+/);
     if (!this.listen || !this.el) return;
 
+    const token = { cancelled: false };
     const fn = this.targetOf ? () => {
-      this.flags.changed = this.checkValueChanged(); ;
-      this.validator.validate(`#${this.targetOf}`);
+      const target = this.validator._resolveField(`#${this.targetOf}`);
+      if (target && target.flags.validated) {
+        this.validator.validate(`#${this.targetOf}`);
+      }
     } : (...args) => {
       // if its a DOM event, resolve the value, otherwise use the first parameter as the value.
-      if (args.length === 0 || (isCallable(Event) && args[0] instanceof Event) || (args[0] && args[0].srcElement)) {
+      if (args.length === 0 || isEvent(args[0])) {
         args[0] = this.value;
       }
 
-      this.flags.changed = this.checkValueChanged();
+      this.flags.pending = true;
+      this._cancellationToken = token;
       this.validator.validate(`#${this.id}`, args[0]);
     };
 
-    let inputEvent = isTextInput(this.el) ? 'input' : 'change';
-    inputEvent = this.model && this.model.lazy ? 'change' : inputEvent;
-    // force change event for non-text type fields, otherwise use the configured.
-    // if no event is configured then respect the user choice.
-    let events = !this.events.length || isTextInput(this.el) ? this.events : ['change'];
+    const inputEvent = this._determineInputEvent();
+    let events = this._determineEventList(inputEvent);
 
-    // if there is a watchable model and an on input validation is requested.
-    if (this.model && this.model.expression && events.indexOf(inputEvent) !== -1) {
-      const debouncedFn = debounce(fn, this.delay[inputEvent]);
-      const unwatch = this.vm.$watch(this.model.expression, (...args) => {
-        this.flags.pending = true;
-        debouncedFn(...args);
-      });
-      this.watchers.push({
-        tag: 'input_model',
-        unwatch
-      });
+    // if on input validation is requested.
+    if (includes(events, inputEvent)) {
+      let ctx = null;
+      let expression = null;
+      let watchCtxVm = false;
+      // if its watchable from the context vm.
+      if (this.model && this.model.expression) {
+        ctx = this.vm;
+        expression = this.model.expression;
+        watchCtxVm = true;
+      }
 
-      // filter out input event as it is already handled by the watcher API.
-      events = events.filter(e => e !== inputEvent);
+      // watch it from the custom component vm instead.
+      if (!expression && this.componentInstance && this.componentInstance.$options.model) {
+        ctx = this.componentInstance;
+        expression = this.componentInstance.$options.model.prop || 'value';
+      }
+
+      if (ctx && expression) {
+        const debouncedFn = debounce(fn, this.delay[inputEvent], token);
+        const unwatch = ctx.$watch(expression, debouncedFn);
+        this.watchers.push({
+          tag: 'input_model',
+          unwatch: () => {
+            this.vm.$nextTick(() => {
+              unwatch();
+            });
+          }
+        });
+
+        // filter out input event when we are watching from the context vm.
+        if (watchCtxVm) {
+          events = events.filter(e => e !== inputEvent);
+        }
+      }
     }
 
     // Add events.
     events.forEach(e => {
-      const debouncedFn = debounce(fn, this.delay[e]);
-      const validate = (...args) => {
-        this.flags.pending = true;
-        debouncedFn(...args);
-      };
+      const debouncedFn = debounce(fn, this.delay[e], token);
 
-      this._addComponentEventListener(e, validate);
-      this._addHTMLEventListener(e, validate);
+      this._addComponentEventListener(e, debouncedFn);
+      this._addHTMLEventListener(e, debouncedFn);
     });
   }
 
   _addComponentEventListener (evt, validate) {
-    if (!this.component) return;
+    if (!this.componentInstance) return;
 
-    this.component.$on(evt, validate);
+    this.componentInstance.$on(evt, validate);
     this.watchers.push({
       tag: 'input_vue',
       unwatch: () => {
-        this.component.$off(evt, validate);
+        this.componentInstance.$off(evt, validate);
       }
     });
   }
 
   _addHTMLEventListener (evt, validate) {
-    if (!this.el || this.component) return;
+    if (!this.el || this.componentInstance) return;
 
     // listen for the current element.
-    addEventListener(this.el, evt, validate);
-    this.watchers.push({
-      tag: 'input_native',
-      unwatch: () => {
-        this.el.removeEventListener(evt, validate);
-      }
-    });
-
-    if (~['radio', 'checkbox'].indexOf(this.el.type)) {
-      const els = document.querySelectorAll(`input[name="${this.el.name}"]`);
-      toArray(els).forEach(el => {
-        // skip if it is added by v-validate and is not the current element.
-        if (getDataAttribute(el, 'id') && el !== this.el) {
-          return;
+    const addListener = (el) => {
+      addEventListener(el, evt, validate);
+      this.watchers.push({
+        tag: 'input_native',
+        unwatch: () => {
+          el.removeEventListener(evt, validate);
         }
-
-        addEventListener(el, evt, validate);
-        this.watchers.push({
-          tag: 'input_native',
-          unwatch: () => {
-            el.removeEventListener(evt, validate);
-          }
-        });
       });
+    };
+
+    addListener(this.el);
+    if (!isCheckboxOrRadioInput(this.el)) {
+      return;
     }
+
+    const els = document.querySelectorAll(`input[name="${this.el.name}"]`);
+    toArray(els).forEach(el => {
+      // skip if it is added by v-validate and is not the current element.
+      if (el._veeValidateId && el !== this.el) {
+        return;
+      }
+
+      addListener(el);
+    });
   }
 
   /**
@@ -600,15 +699,25 @@ export default class Field {
   updateAriaAttrs () {
     if (!this.aria || !this.el || !isCallable(this.el.setAttribute)) return;
 
-    this.el.setAttribute('aria-required', this.isRequired ? 'true' : 'false');
-    this.el.setAttribute('aria-invalid', this.flags.invalid ? 'true' : 'false');
+    const applyAriaAttrs = (el) => {
+      el.setAttribute('aria-required', this.isRequired ? 'true' : 'false');
+      el.setAttribute('aria-invalid', this.flags.invalid ? 'true' : 'false');
+    };
+
+    if (!isCheckboxOrRadioInput(this.el)) {
+      applyAriaAttrs(this.el);
+      return;
+    }
+
+    const els = document.querySelectorAll(`input[name="${this.el.name}"]`);
+    toArray(els).forEach(applyAriaAttrs);
   }
 
   /**
    * Updates the custom validity for the field.
    */
   updateCustomValidity () {
-    if (!this.validity || !this.el || !isCallable(this.el.setCustomValidity)) return;
+    if (!this.validity || !this.el || !isCallable(this.el.setCustomValidity) || !this.validator.errors) return;
 
     this.el.setCustomValidity(this.flags.valid ? '' : (this.validator.errors.firstById(this.id) || ''));
   }
@@ -617,6 +726,11 @@ export default class Field {
    * Removes all listeners.
    */
   destroy () {
+    // ignore the result of any ongoing validation.
+    if (this._cancellationToken) {
+      this._cancellationToken.cancelled = true;
+    }
+
     this.unwatch();
     this.dependencies.forEach(d => d.field.destroy());
     this.dependencies = [];
